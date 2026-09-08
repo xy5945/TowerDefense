@@ -1,0 +1,44 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+
+# ===== 虚拟环境 =====
+venv/
+env/
+.venv/
+
+# ===== PyInstaller 打包产物 =====
+build/
+dist/
+*.spec.bak
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ===== 工作助手目录（项目日志，勿公开）=====
+.workbuddy/
+
+# ===== 调试/中间产物 =====
+outputs/
+test_alpha.png
+
+# ===== 资源历史版本（仅保留正式资源）=====
+assets/enemies_gen/
+assets/enemies_gen2/
+assets/towers_gen/
+assets/towers_v2/
+assets/enemies_preview/
+assets/enemies_backup/
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini

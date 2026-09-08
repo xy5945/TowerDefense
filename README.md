@@ -5,7 +5,7 @@
 ![版本](https://img.shields.io/badge/version-v1.0.0-ffd700)
 ![Python](https://img.shields.io/badge/Python-3.8%2B-3776ab)
 ![pygame](https://img.shields.io/badge/pygame-2.0%2B-green)
-![License](https://img.shields.io/badge/license-%E9%9D%92%E6%9C%A8%E5%8D%8F%E8%AE%AE-blue)
+![License](https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey)
 
 ---
 

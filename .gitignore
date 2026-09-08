@@ -38,6 +38,10 @@ assets/towers_v2/
 assets/enemies_preview/
 assets/enemies_backup/
 
+# ===== 已清理的 AI 草稿与调试产物（不再跟踪）=====
+assets/logo/
+assets/route_preview.html
+
 # ===== 系统文件 =====
 .DS_Store
 Thumbs.db

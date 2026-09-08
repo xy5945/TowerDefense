@@ -107,6 +107,7 @@ class Game:
         self.result_elapsed: float = 0.0    # 结算展示：用时
         self.result_reward_gold: int = 0    # 结算展示：金币奖励
         self.result_anim_timer: float = 0.0 # 星级点亮动画计时
+        self.result_wave: int = 0           # 失败结算用: 本关撑到的波数
 
         self.reset_game()
         audio.play_bgm("menu_bgm")
@@ -364,6 +365,8 @@ class Game:
         # 游戏结束检测
         if self.lives <= 0:
             self.state = 'game_over'
+            # 记录失败时的波数 / 击杀数 / 用时, 在结算页展示
+            self.result_wave = self.wave
 
     def _spawn_from_queue(self, dt: float) -> None:
         if not (self.wave_active and self.spawn_queue):
@@ -694,11 +697,25 @@ class Game:
             else:
                 self.state = 'victory'
                 self.victory_timer = 5.0
-        else:
-            if not (WIDTH // 2 - 100 <= x <= WIDTH // 2 + 100 and HEIGHT // 2 + 60 <= y <= HEIGHT // 2 + 120):
-                return
-            self.state = 'menu'
-            audio.play_bgm("menu_bgm")
+        elif self.state == 'game_over':
+            # 两个按钮:再试一次 (左, 红色) + 结束游戏 (右, 灰色)
+            btn_w, btn_h = 220, 60
+            gap = 30
+            total_w = btn_w * 2 + gap
+            left_x = WIDTH // 2 - total_w // 2
+            right_x = left_x + btn_w + gap
+            btn_y = HEIGHT - 130
+
+            # 「再试一次」按钮位置 (因为加了 border 微妙边框, 比对的 Rect 也对应略大)
+            retry_btn = pygame.Rect(left_x, btn_y - 5, btn_w, btn_h + 10)
+            exit_btn  = pygame.Rect(right_x, btn_y, btn_w, btn_h)
+
+            if retry_btn.collidepoint(x, y):
+                # 不变关卡, 重置本关 → 直接进入关卡介绍页
+                self._enter_level_intro()
+            elif exit_btn.collidepoint(x, y):
+                self.state = 'menu'
+                audio.play_bgm("menu_bgm")
 
     # ============================================================
     #  调试快捷键（连按序列触发）
@@ -817,7 +834,14 @@ class Game:
                 level_elapsed=self.level_elapsed,
             )
         elif self.state == 'game_over':
-            renderer.draw_game_over()
+            level_name = LEVEL_NAMES[self.current_level - 1] if self.current_level <= len(LEVEL_NAMES) else ""
+            renderer.draw_game_over(
+                current_level=self.current_level,
+                level_name=level_name,
+                wave_reached=self.result_wave,
+                elapsed=self.level_elapsed,
+                killed=self.killed_count,
+            )
         elif self.state == 'level_complete':
             level_name = LEVEL_NAMES[self.current_level - 1] if self.current_level <= len(LEVEL_NAMES) else ""
             renderer.draw_level_complete(

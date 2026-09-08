@@ -652,17 +652,72 @@ class Renderer:
         hint_y = HEIGHT // 2 + 80
         self.screen.blit(hint_surf, (hint_x, hint_y))
 
-    def draw_game_over(self) -> None:
-        self.screen.fill((30, 30, 30))
-        font_big = fonts.get(36)
-        font_med = fonts.get(24)
+    def draw_game_over(
+        self,
+        current_level: int,
+        level_name: str,
+        wave_reached: int,
+        elapsed: float,
+        killed: int,
+    ) -> None:
+        """失败结算页：
+        - 标题 + 关卡名
+        - 「撑到了第 X 波 / Y 秒，差一点过关」
+        - 击杀数副信息
+        - 底部两个按钮：再试一次（红色大）+ 结束游戏（灰色）
+        """
+        self.screen.fill((24, 28, 34))
 
-        txt = font_big.render("游戏结束", True, (255, 80, 80))
-        self.screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 80))
-        btn = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2 + 60, 200, 60)
-        pygame.draw.rect(self.screen, (150, 50, 50), btn, border_radius=10)
-        bt = font_med.render("返回菜单", True, (255, 255, 255))
-        self.screen.blit(bt, (btn.centerx - bt.get_width() // 2, btn.centery - bt.get_height() // 2))
+        font_big = fonts.get(40)
+        font_med = fonts.get(24)
+        font_small = fonts.get(20)
+
+        # 标题
+        title = f"第 {current_level} 关 · {level_name}"
+        t = font_big.render(title, True, (230, 90, 90))
+        self.screen.blit(t, (WIDTH // 2 - t.get_width() // 2, 90))
+
+        # 主信息：撑到的波数 + 用时
+        secs = max(0, int(elapsed))
+        time_str = f"{secs // 60}:{secs % 60:02d}"
+        main = f"你撑到了第 {wave_reached} 波 / {time_str}，差一点过关"
+        m = font_med.render(main, True, (235, 220, 180))
+        self.screen.blit(m, (WIDTH // 2 - m.get_width() // 2, 175))
+
+        # 击杀数副信息
+        sub = f"本关击杀 {killed} 个敌人，继续努力"
+        s = font_small.render(sub, True, (170, 170, 175))
+        self.screen.blit(s, (WIDTH // 2 - s.get_width() // 2, 220))
+
+        # 底部两个按钮
+        btn_w, btn_h = 220, 60
+        gap = 30
+        total_w = btn_w * 2 + gap
+        left_x = WIDTH // 2 - total_w // 2
+        right_x = left_x + btn_w + gap
+        btn_y = HEIGHT - 130
+
+        # 「再试一次」红色大按钮（主操作）
+        retry_btn = pygame.Rect(left_x, btn_y - 5, btn_w, btn_h + 10)
+        pygame.draw.rect(self.screen, (190, 55, 55), retry_btn, border_radius=10)
+        pygame.draw.rect(self.screen, (240, 100, 100), retry_btn, width=2, border_radius=10)
+        btn1_text = font_med.render("再试一次", True, (255, 255, 255))
+        self.screen.blit(
+            btn1_text,
+            (retry_btn.centerx - btn1_text.get_width() // 2,
+             retry_btn.centery - btn1_text.get_height() // 2),
+        )
+
+        # 「结束游戏」灰色按钮
+        exit_btn = pygame.Rect(right_x, btn_y, btn_w, btn_h)
+        pygame.draw.rect(self.screen, (70, 70, 80), exit_btn, border_radius=10)
+        pygame.draw.rect(self.screen, (130, 130, 140), exit_btn, width=2, border_radius=10)
+        btn2_text = font_med.render("结束游戏", True, (220, 220, 225))
+        self.screen.blit(
+            btn2_text,
+            (exit_btn.centerx - btn2_text.get_width() // 2,
+             exit_btn.centery - btn2_text.get_height() // 2),
+        )
 
     def draw_level_complete(
         self,

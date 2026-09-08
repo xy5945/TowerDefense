@@ -14,7 +14,7 @@ MAP_W: int = WIDTH - SIDE_PANEL
 GRID_SIZE: int = 40
 
 # ---------- 游戏锁定日期 ----------
-LOCK_DATE = "2026-09-11"
+LOCK_DATE = "2026-10-11"
 
 # ---------- 关卡名称（1-10关） ----------
 LEVEL_NAMES: List[str] = [

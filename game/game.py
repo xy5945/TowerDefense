@@ -11,7 +11,10 @@ import pygame
 from game.config import (
     CONFIG, WIDTH, HEIGHT, MAP_W, SIDE_PANEL, GRID_SIZE, LEVEL_NAMES,
     load_paths, DIFFICULTY_CONFIGS, calc_star_rating, STAR_REWARD_COEFF,
+    MENU_DIFF_Y, MENU_DIFF_H, menu_button_rect,
+    LIC_BTN_BACK, LIC_BTN_OK,
 )
+from game import license as lic
 from game.assets import audio, images
 from game.effects import ParticlePool, LaserManager
 from game.enemy import Enemy
@@ -20,6 +23,12 @@ from game.bullet import Bullet
 from game.wave import generate_wave, generate_boss_summon, format_wave_preview
 from game.renderer import Renderer
 from game.utils import point_near_path, snap_to_grid
+
+
+def _in_rect(x: float, y: float, rect) -> bool:
+    """点是否落在 (x, y, w, h) 矩形里。坐标来自 config，与 renderer 同源。"""
+    rx, ry, rw, rh = rect
+    return rx <= x <= rx + rw and ry <= y <= ry + rh
 
 
 class Game:
@@ -73,6 +82,11 @@ class Game:
         self.guide_scroll: float = 0.0
         # 关于本作品页滚动
         self.about_scroll: float = 0.0
+
+        # 激活码页：输入框内容 + 提示行（试玩/授权状态直接读 game.license）
+        self.license_input: str = ""
+        self.license_msg: str = ""
+        self.license_msg_color: Tuple[int, int, int] = (200, 190, 170)
 
         # 加载关卡路径
         self._path_templates = load_paths(data_dir)
@@ -515,6 +529,8 @@ class Game:
             self._handle_guide_click(x, y)
         elif self.state == 'about':
             self._handle_about_click(x, y)
+        elif self.state == 'license':
+            self._handle_license_click(x, y)
         elif self.state == 'playing':
             # 预告面板正在显示：
             # - 点开始波次按钮：同时关闭预告并开战
@@ -537,39 +553,138 @@ class Game:
             self._handle_end_screen_click(x, y)
 
     def _handle_menu_click(self, x: float, y: float) -> None:
-        cx = WIDTH // 2
-        btn_w, btn_h = 220, 55
-        btn_x = cx - btn_w // 2
+        """主菜单点击。按钮坐标来自 config.menu_button_rect，与 renderer 同源。"""
+        for i in range(4):
+            bx, by, bw, bh = menu_button_rect(i)
+            if not (bx <= x <= bx + bw and by <= y <= by + bh):
+                continue
+            if i == 0:
+                # 试用/授权到期：不放行，直接把人引到激活页（那里才拿得到申请码）
+                if lic.state.is_expired():
+                    self._open_license()
+                    return
+                self.current_level = 1  # 每次开始都从第 1 关开始，不保存进度
+                self._enter_level_intro()
+            elif i == 1:
+                self.state = 'guide'
+                self.guide_scroll = 0.0
+            elif i == 2:
+                self.state = 'about'
+                self.about_scroll = 0.0
+            else:
+                self._open_license()
+            return
 
-        # 开始游戏按钮 (y=300)
-        if btn_x <= x <= btn_x + btn_w and 300 <= y <= 300 + btn_h:
-            self.current_level = 1  # 每次开始都从第 1 关开始，不保存进度
-            self._enter_level_intro()
-        # 游戏说明按钮 (y=370)
-        elif btn_x <= x <= btn_x + btn_w and 370 <= y <= 370 + btn_h:
-            self.state = 'guide'
-            self.guide_scroll = 0.0
-        # 关于本作品按钮 (y=440)
-        elif btn_x <= x <= btn_x + btn_w and 440 <= y <= 440 + btn_h:
-            self.state = 'about'
+        # 难度选择面板（与 renderer 同步，坐标同样取自 config）
+        btn_x, _, btn_w, _ = menu_button_rect(0)
+        if not (btn_x <= x <= btn_x + btn_w and MENU_DIFF_Y <= y <= MENU_DIFF_Y + MENU_DIFF_H):
+            return
+        # 面板内：左 80px 是难度标签，右侧才是 3 个按钮
+        if x < btn_x + 80:
+            return
+        gap = 6
+        btn_area_x = btn_x + 80
+        btn_area_w = btn_w - 95
+        diff_btn_w = (btn_area_w - gap * 2) // 3
+        for i, diff_key in enumerate(('easy', 'normal', 'hard')):
+            bx = btn_area_x + i * (diff_btn_w + gap)
+            if bx <= x <= bx + diff_btn_w:
+                self.difficulty = diff_key
+                return
+
+
+    # ---------------- 授权 / 激活 ----------------
+
+    def _open_license(self) -> None:
+        """打开激活页：清空输入，提示行先显示当前状态。"""
+        self.state = 'license'
+        self.license_input = ""
+        lic.state._ensure()
+        # 提示行只讲「接下来做什么」，具体天数交给下面的状态行 ——
+        # 两行都写同一句话（"试用剩余 7 天"）属于白占地方
+        if lic.state.is_permanent():
+            self.license_msg = "本机已永久授权，无需再次激活"
+            self.license_msg_color = (150, 220, 150)
+        elif lic.state.is_expired():
+            self.license_msg = "输入激活码后即可继续游玩"
+            self.license_msg_color = (235, 200, 120)
         else:
-            # 难度选择面板（与 renderer 同步）：y=512, 高44
-            diff_panel_y = 512
-            diff_panel_h = 44
-            if btn_x <= x <= btn_x + btn_w and diff_panel_y <= y <= diff_panel_y + diff_panel_h:
-                # 面板内：左 80px 是"难度"标签，右侧是 3 个按钮
-                label_end_x = btn_x + 80
-                if x < label_end_x:
-                    return  # 点在标签上不算
-                gap = 6
-                btn_area_x = btn_x + 80
-                btn_area_w = btn_w - 95
-                diff_btn_w = (btn_area_w - gap * 2) // 3
-                for i, diff_key in enumerate(('easy', 'normal', 'hard')):
-                    bx = btn_area_x + i * (diff_btn_w + gap)
-                    if bx <= x <= bx + diff_btn_w:
-                        self.difficulty = diff_key
-                        return
+            self.license_msg = "输入激活码后立即生效"
+            self.license_msg_color = (200, 190, 170)
+
+    def _handle_license_click(self, x: float, y: float) -> None:
+        if _in_rect(x, y, LIC_BTN_BACK):
+            self.state = 'menu'
+        elif _in_rect(x, y, LIC_BTN_OK):
+            self._submit_license()
+
+    def _paste_license(self) -> None:
+        """从剪贴板粘贴激活码 —— 学生多半是复制过来的，省 20 次按键。"""
+        try:
+            if not pygame.scrap.get_init():
+                pygame.scrap.init()
+            raw = pygame.scrap.get(pygame.SCRAP_TEXT)
+        except Exception:
+            return
+        if not raw:
+            return
+        try:
+            text = raw.decode("utf-8", "ignore")
+        except Exception:
+            return
+        kept = "".join(c for c in lic.clean(text) if c in lic.B32)
+        if kept:
+            self.license_input = (self.license_input + kept)[:lic.CODE_CHARS]
+
+    def _handle_license_key(self, event) -> None:
+        key = event.key
+        if key == pygame.K_ESCAPE:
+            self.state = 'menu'
+            return
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self._submit_license()
+            return
+        if key == pygame.K_BACKSPACE:
+            self.license_input = self.license_input[:-1]
+            return
+        if key == pygame.K_v and (event.mod & pygame.KMOD_CTRL):
+            self._paste_license()
+            return
+        ch = getattr(event, "unicode", "") or ""
+        if ch and ch.isprintable() and len(self.license_input) < lic.CODE_CHARS:
+            c = ch.upper().replace("0", "O").replace("1", "I")
+            if c in lic.B32:          # 连字符会自动补，非法字符直接忽略
+                self.license_input += c
+
+    def _submit_license(self) -> None:
+        typed = lic.clean(self.license_input)
+        if len(typed) != lic.CODE_CHARS:
+            self.license_msg = "激活码应该是 20 个字符，现在填了 %d 个" % len(typed)
+            self.license_msg_color = (235, 120, 110)
+            return
+        res = lic.verify(self.license_input)
+        if not bool(res["ok"]):
+            self.license_msg = str(res["reason"])
+            self.license_msg_color = (235, 120, 110)
+            return
+        if not lic.state.activate(int(res["days"]), self.license_input):
+            self.license_msg = "这张激活码已经在本机用过了，请找作者要一张新的"
+            self.license_msg_color = (235, 120, 110)
+            return
+        self.license_input = ""
+        if bool(res["permanent"]):
+            self.license_msg = "激活成功：已永久授权"
+        else:
+            self.license_msg = "激活成功：可使用 %d 天" % int(res["days"])
+        self.license_msg_color = (150, 220, 150)
+
+    def handle_keydown(self, event) -> None:
+        """键盘入口：激活页要吃字符，其余情况仍走原来的调试按键序列。"""
+        if self.state == 'license':
+            self._handle_license_key(event)
+            return
+        self.handle_debug_key(event.key)
+
 
     def _handle_guide_click(self, x: float, y: float) -> None:
         """游戏说明页点击：返回按钮。"""
@@ -792,7 +907,17 @@ class Game:
     def draw(self, renderer: Renderer) -> None:
         if self.state == 'menu':
             from game.assets import images as _images
-            renderer.draw_menu(self.menu_bg, _images.get_logo(), self.difficulty)
+            renderer.draw_menu(
+                self.menu_bg, _images.get_logo(), self.difficulty,
+                lic.state.status_text(), lic.state.is_expired(),
+            )
+        elif self.state == 'license':
+            caret = (pygame.time.get_ticks() // 500) % 2 == 0
+            renderer.draw_license(
+                self.menu_bg, lic.machine_code(), self.license_input,
+                self.license_msg, self.license_msg_color,
+                lic.state.status_text(), caret,
+            )
         elif self.state == 'guide':
             renderer.draw_guide(self.guide_scroll)
             # 缓存渲染器计算出的内容高度，供 handle_scroll 做滚动上限

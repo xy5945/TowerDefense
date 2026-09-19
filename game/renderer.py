@@ -10,8 +10,13 @@ import pygame
 from game.config import (
     CONFIG, WIDTH, HEIGHT, MAP_W, SIDE_PANEL, GRID_SIZE,
     LEVEL_PATH_STYLES, DIFFICULTY_CONFIGS, STAR_REWARD_COEFF, calc_star_countdown,
+    MENU_LOGO_SIZE, MENU_LOGO_Y, MENU_TITLE_Y, MENU_SUB_Y, MENU_STATUS_Y,
+    MENU_BTN_W, MENU_DIFF_Y, MENU_DIFF_H, menu_button_rect,
+    LIC_PANEL_X, LIC_PANEL_Y, LIC_PANEL_W, LIC_PANEL_H,
+    LIC_INPUT_RECT, LIC_BTN_BACK, LIC_BTN_OK,
 )
 from game.assets import fonts
+from game.license import format_input as format_code
 from game.utils import (
     draw_transparent_circle,
     draw_transparent_rect,
@@ -34,8 +39,18 @@ class Renderer:
     #  菜单 / 过渡画面
     # ============================================================
 
-    def draw_menu(self, menu_bg: Optional[pygame.Surface], logo: Optional[pygame.Surface] = None, difficulty: str = 'normal') -> None:
-        """主菜单：暗黑魔幻风格，背景图 + 发光标题 + 三个按钮 + 难度选择。"""
+    def draw_menu(
+        self,
+        menu_bg: Optional[pygame.Surface],
+        logo: Optional[pygame.Surface] = None,
+        difficulty: str = 'normal',
+        lic_status: str = "",
+        lic_locked: bool = False,
+    ) -> None:
+        """主菜单：暗黑魔幻风格，背景图 + 发光标题 + 四个按钮 + 难度选择。
+
+        lic_status / lic_locked 由 Game 传入（renderer 不自己读授权状态）。
+        """
         # 背景
         if menu_bg:
             self.screen.blit(menu_bg, (0, 0))
@@ -55,14 +70,13 @@ class Renderer:
 
         # Logo 图标（居中显示在标题上方）
         if logo:
-            logo_size = 160
+            logo_size = MENU_LOGO_SIZE
             logo_scaled = pygame.transform.smoothscale(logo, (logo_size, logo_size))
             logo_x = cx - logo_size // 2
-            logo_y = 10
-            self.screen.blit(logo_scaled, (logo_x, logo_y))
-            title_y = 190
+            self.screen.blit(logo_scaled, (logo_x, MENU_LOGO_Y))
+            title_y = MENU_TITLE_Y
         else:
-            title_y = 120
+            title_y = MENU_TITLE_Y - MENU_LOGO_SIZE // 2
 
         # 标题 "守护稚码王国" + 发光效果
         title_text = "守护稚码王国"
@@ -81,34 +95,40 @@ class Renderer:
         # 副标题
         sub_text = "暗黑塔防游戏"
         sub_surf = font_sub.render(sub_text, True, (180, 160, 120))
-        self.screen.blit(sub_surf, (cx - sub_surf.get_width() // 2, title_y + 65))
+        self.screen.blit(sub_surf, (cx - sub_surf.get_width() // 2, MENU_SUB_Y))
 
-        # 按钮样式
-        btn_w, btn_h = 220, 55
-        btn_x = cx - btn_w // 2
+        # 授权状态行：平时是安静的灰绿提示，到期时变红催一下
+        if lic_status:
+            font_status = fonts.get(18)
+            status_color = (235, 110, 100) if lic_locked else (150, 195, 150)
+            status_surf = font_status.render(lic_status, True, status_color)
+            self.screen.blit(status_surf, (cx - status_surf.get_width() // 2, MENU_STATUS_Y))
+
+        # 按钮：坐标集中在 config.MENU_*，与 game 的点击判定同源
         btn_colors = {
             'start': ((60, 140, 70), (80, 180, 90), (40, 100, 50)),
             'guide': ((60, 70, 140), (80, 90, 180), (40, 50, 100)),
             'about': ((120, 90, 50), (180, 130, 70), (80, 60, 30)),
+            'license': ((70, 70, 88), (120, 120, 145), (45, 45, 58)),
         }
+        # 到期时：开始游戏灰掉，激活码按钮换成醒目的暖色，把注意力引过去
+        if lic_locked:
+            btn_colors['start'] = ((52, 52, 60), (88, 88, 98), (32, 32, 38))
+            btn_colors['license'] = ((150, 110, 40), (215, 165, 70), (95, 70, 25))
 
-        # 开始游戏按钮
-        btn_start_y = 300
-        btn_text = "开始游戏"
-        self._draw_styled_button(btn_x, btn_start_y, btn_w, btn_h, btn_text, btn_colors['start'], font_btn)
-
-        # 游戏说明按钮
-        btn_guide_y = 370
-        self._draw_styled_button(btn_x, btn_guide_y, btn_w, btn_h, "游戏说明", btn_colors['guide'], font_btn)
-
-        # 关于本作品按钮
-        btn_about_y = 440
-        self._draw_styled_button(btn_x, btn_about_y, btn_w, btn_h, "关于本作品", btn_colors['about'], font_btn)
+        for i, (key, label) in enumerate((
+            ('start', '开始游戏'),
+            ('guide', '游戏说明'),
+            ('about', '关于本作品'),
+            ('license', '输入激活码'),
+        )):
+            bx, by, bw, bh = menu_button_rect(i)
+            self._draw_styled_button(bx, by, bw, bh, label, btn_colors[key], font_btn)
 
         # 难度选择区（独立暗色面板，与上方按钮拉开呼吸空间）
-        diff_panel_y = 512
-        diff_panel_h = 44
-        diff_panel_rect = pygame.Rect(btn_x, diff_panel_y, btn_w, diff_panel_h)
+        diff_panel_rect = pygame.Rect(
+            WIDTH // 2 - MENU_BTN_W // 2, MENU_DIFF_Y, MENU_BTN_W, MENU_DIFF_H
+        )
         pygame.draw.rect(self.screen, (30, 28, 45), diff_panel_rect, border_radius=8)
         pygame.draw.rect(self.screen, (90, 80, 60), diff_panel_rect, 1, border_radius=8)
 
@@ -161,6 +181,89 @@ class Renderer:
             footer_surf,
             (cx - footer_surf.get_width() // 2, HEIGHT - 22),
         )
+
+    # ============================================================
+    #  激活码页
+    # ============================================================
+
+    def draw_license(
+        self,
+        menu_bg: Optional[pygame.Surface],
+        machine_code: str,
+        input_text: str,
+        message: str = "",
+        message_color=(200, 190, 170),
+        status_text: str = "",
+        caret: bool = False,
+    ) -> None:
+        """输入激活码的页面。
+
+        这一页的主角不是输入框，**是那串申请码** —— 学生要照着它念给作者、
+        或者打字发过去。字号给到 40，放在最显眼的位置，输入框反而在下面。
+        """
+        if menu_bg:
+            self.screen.blit(menu_bg, (0, 0))
+        else:
+            self.screen.fill((20, 15, 30))
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 190))
+        self.screen.blit(overlay, (0, 0))
+
+        panel = pygame.Rect(LIC_PANEL_X, LIC_PANEL_Y, LIC_PANEL_W, LIC_PANEL_H)
+        pygame.draw.rect(self.screen, (26, 24, 38), panel, border_radius=10)
+        pygame.draw.rect(self.screen, (110, 100, 70), panel, 2, border_radius=10)
+        cx = panel.centerx
+
+        title = fonts.get(30).render("输入激活码", True, (255, 220, 130))
+        self.screen.blit(title, (cx - title.get_width() // 2, panel.y + 18))
+
+        hint = fonts.get(18).render("把下面这串申请码发给作者，即可换取激活码", True, (180, 170, 150))
+        self.screen.blit(hint, (cx - hint.get_width() // 2, panel.y + 62))
+
+        code_surf = fonts.get(40).render(machine_code, True, (255, 215, 90))
+        self.screen.blit(code_surf, (cx - code_surf.get_width() // 2, panel.y + 92))
+
+        # 输入框：边打字边按 4 位分组显示，抄错了看得见
+        box = pygame.Rect(LIC_INPUT_RECT)
+        pygame.draw.rect(self.screen, (16, 15, 24), box, border_radius=6)
+        pygame.draw.rect(self.screen, (140, 125, 80), box, 2, border_radius=6)
+        font_input = fonts.get(26)
+        text_x = box.x + 14
+        if input_text:
+            typed = font_input.render(format_code(input_text), True, (255, 245, 215))
+            self.screen.blit(typed, (text_x, box.centery - typed.get_height() // 2))
+            caret_x = text_x + typed.get_width() + 3
+        else:
+            placeholder = font_input.render("XXXX-XXXX-XXXX-XXXX-XXXX", True, (95, 90, 80))
+            self.screen.blit(placeholder, (text_x, box.centery - placeholder.get_height() // 2))
+            caret_x = text_x
+        if caret:
+            pygame.draw.rect(
+                self.screen, (255, 215, 90),
+                (caret_x, box.y + 10, 2, box.height - 20),
+            )
+
+        if message:
+            msg = fonts.get(18).render(message, True, message_color)
+            self.screen.blit(msg, (cx - msg.get_width() // 2, panel.y + 218))
+
+        if status_text:
+            st = fonts.get(16).render(status_text, True, (150, 165, 150))
+            self.screen.blit(st, (cx - st.get_width() // 2, panel.y + 246))
+
+        back = pygame.Rect(LIC_BTN_BACK)
+        self._draw_styled_button(
+            back.x, back.y, back.w, back.h, "返回",
+            ((70, 70, 88), (120, 120, 145), (45, 45, 58)), fonts.get(22),
+        )
+        ok = pygame.Rect(LIC_BTN_OK)
+        self._draw_styled_button(
+            ok.x, ok.y, ok.w, ok.h, "立即激活",
+            ((60, 140, 70), (90, 190, 100), (40, 100, 50)), fonts.get(22),
+        )
+
+        esc = fonts.get(16).render("回车激活　Ctrl+V 粘贴　Esc 返回", True, (130, 125, 115))
+        self.screen.blit(esc, (cx - esc.get_width() // 2, panel.bottom - 32))
 
     def _draw_styled_button(self, x, y, w, h, text, colors, font):
         """绘制带边框和阴影的风格化按钮。"""

@@ -14,7 +14,45 @@ MAP_W: int = WIDTH - SIDE_PANEL
 GRID_SIZE: int = 40
 
 # ---------- 游戏锁定日期 ----------
+# 已被「授权系统」（game/license.py）取代：到期判定交给试用/激活天数，
+# 这样已激活的学生不会被这个日期一刀切锁死。保留常量是为了将来想加
+# 「无论是否激活，到某天一律停服」的硬性截止日时有个现成的位置。
 LOCK_DATE = "2026-10-11"
+
+
+# ---------- 主菜单布局 ----------
+# renderer 与 game 共用同一份坐标（写成两处最容易改一半，之前就吃过这个亏）
+MENU_LOGO_SIZE: int = 120
+MENU_LOGO_Y: int = 4
+MENU_TITLE_Y: int = 128
+MENU_SUB_Y: int = 196
+MENU_STATUS_Y: int = 228
+MENU_BTN_W: int = 220
+MENU_BTN_H: int = 48
+MENU_BTN_GAP: int = 6
+MENU_BTN_TOP: int = 258
+MENU_DIFF_Y: int = 480
+MENU_DIFF_H: int = 44
+
+
+def menu_button_rect(index: int) -> Tuple[int, int, int, int]:
+    """第 index 个主菜单按钮的 (x, y, w, h)。
+
+    顺序：0 开始游戏 / 1 游戏说明 / 2 关于本作品 / 3 输入激活码
+    """
+    x = WIDTH // 2 - MENU_BTN_W // 2
+    y = MENU_BTN_TOP + index * (MENU_BTN_H + MENU_BTN_GAP)
+    return x, y, MENU_BTN_W, MENU_BTN_H
+
+
+# ---------- 激活码页布局 ----------
+LIC_PANEL_X: int = 180
+LIC_PANEL_Y: int = 112
+LIC_PANEL_W: int = 600
+LIC_PANEL_H: int = 380
+LIC_INPUT_RECT: Tuple[int, int, int, int] = (230, 272, 500, 46)
+LIC_BTN_BACK: Tuple[int, int, int, int] = (330, 400, 140, 44)
+LIC_BTN_OK: Tuple[int, int, int, int] = (490, 400, 140, 44)
 
 # ---------- 关卡名称（1-10关） ----------
 LEVEL_NAMES: List[str] = [

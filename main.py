@@ -2,35 +2,24 @@
 塔防游戏 - 主入口
 重构版本：模块化架构，存档系统，配置外置。
 """
+import os
 import sys
-import datetime
 
 import pygame
 
-from game.config import WIDTH, HEIGHT, LOCK_DATE
+from game.config import WIDTH, HEIGHT
 from game.assets import audio, images
 from game.game import Game
 from game.renderer import Renderer
 
 
-def is_locked() -> bool:
-    lock = datetime.datetime.strptime(LOCK_DATE, "%Y-%m-%d")
-    return datetime.datetime.now() > lock
-
-
-def show_lock_window(window_screen: pygame.Surface, renderer: Renderer) -> None:
-    renderer.draw_lock_screen(window_screen)
-    pygame.display.flip()
-    waiting = True
-    while waiting:
-        for event in pygame.event.get():
-            if event.type in (pygame.QUIT, pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
-                waiting = False
-    pygame.quit()
-    sys.exit()
-
-
 def main() -> None:
+    # 授权自检：不开窗口，直接跑一遍验码 / 续期 / 拒绝重复 的用例。
+    # 用法：python main.py --lictest
+    if "--lictest" in sys.argv:
+        from tools.lic_selftest import run
+        sys.exit(run())
+
     pygame.init()
     pygame.mixer.init()
     pygame.mixer.set_num_channels(16)
@@ -42,9 +31,9 @@ def main() -> None:
 
     renderer = Renderer(canvas)
 
-    # 锁定检测
-    if is_locked():
-        show_lock_window(window_screen, renderer)
+    # 到期判定不在这里做 —— 试用/授权状态由 game.license 管。
+    # 到期后在主菜单灰掉「开始游戏」并把玩家引到「输入激活码」页，
+    # 而不是拿一个死锁画面把人挡在外面（那样他连激活的机会都没有）。
 
     # 加载资源
     audio.load_sounds()
@@ -56,7 +45,6 @@ def main() -> None:
         pygame.display.set_icon(images.get_logo_small())
 
     # 数据目录
-    import os
     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
     # 创建游戏实例
@@ -89,7 +77,8 @@ def main() -> None:
                 canvas_y = my * scale_y
                 game.update_hover((canvas_x, canvas_y))
             elif event.type == pygame.KEYDOWN:
-                game.handle_debug_key(event.key)
+                # 激活页要吃字符（含 Ctrl+V 粘贴），所以整事件传下去
+                game.handle_keydown(event)
             elif event.type == pygame.MOUSEWHEEL:
                 game.handle_scroll(event.y)
 

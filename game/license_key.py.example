@@ -1,0 +1,12 @@
+"""
+授权密钥模板 —— 复制成 license_key.py 再填上真实密钥。
+
+密钥从发码工具导出（工具目录不在本仓库里，作者自己保管）：
+    python keygen.py --export tower_defense
+
+取值示例：
+    SECRET_HEX = "0123456789abcdef" * 4      # 64 个十六进制字符 = 32 字节
+"""
+
+GAME_ID = 2
+SECRET_HEX = ""

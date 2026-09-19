@@ -42,6 +42,9 @@ assets/enemies_backup/
 assets/logo/
 assets/route_preview.html
 
+# ===== 授权密钥（整套授权体系唯一的秘密，勿提交）=====
+game/license_key.py
+
 # ===== 系统文件 =====
 .DS_Store
 Thumbs.db

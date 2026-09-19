@@ -7,10 +7,29 @@ import sys
 
 import pygame
 
-from game.config import WIDTH, HEIGHT
+from game.config import WIDTH, HEIGHT, lock_active
 from game.assets import audio, images
+from game import license as lic
 from game.game import Game
 from game.renderer import Renderer
+
+
+def show_lock_window(window_screen: pygame.Surface, renderer: Renderer) -> None:
+    """硬截止日到了：显示锁屏，按任意键 / 点击 / 关窗后退出。
+
+    当前默认走不到这里 —— config.LOCK_DATE_ENABLED 是 False，硬锁处于
+    「屏蔽但保留」状态，到期与否只看授权系统。将来想恢复「无论是否激活，
+    到某天一律停服」时，把开关打开即可，这段不用重写。
+    """
+    renderer.draw_lock_screen(window_screen)
+    pygame.display.flip()
+    waiting = True
+    while waiting:
+        for event in pygame.event.get():
+            if event.type in (pygame.QUIT, pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                waiting = False
+    pygame.quit()
+    sys.exit()
 
 
 def main() -> None:
@@ -19,6 +38,13 @@ def main() -> None:
     if "--lictest" in sys.argv:
         from tools.lic_selftest import run
         sys.exit(run())
+
+    # 试用从「第一次运行游戏」算起：一进游戏就把授权状态读出来（首次会落盘
+    # 记下起算日），让「打开过游戏」这件事本身开始计时，而不是拖到主菜单
+    # 第一次来问它才定日子。之后每开一次会自己把「上次运行日期」往前推，
+    # 学生删了记录也删不掉隐藏埋点。
+    # 口径与《代码幸存者》一致：7 天试用、起算日重置式续期、一码一用。
+    lic.state.load()
 
     pygame.init()
     pygame.mixer.init()
@@ -31,9 +57,12 @@ def main() -> None:
 
     renderer = Renderer(canvas)
 
-    # 到期判定不在这里做 —— 试用/授权状态由 game.license 管。
+    # 硬截止日：当前屏蔽中（config.LOCK_DATE_ENABLED = False），lock_active()
+    # 恒为 False，所以下面这句现在不会拦人。到期判定一律交给授权系统 ——
     # 到期后在主菜单灰掉「开始游戏」并把玩家引到「输入激活码」页，
     # 而不是拿一个死锁画面把人挡在外面（那样他连激活的机会都没有）。
+    if lock_active():
+        show_lock_window(window_screen, renderer)
 
     # 加载资源
     audio.load_sounds()

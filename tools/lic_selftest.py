@@ -212,6 +212,87 @@ def _t_aux_legacy(tmpdir) -> None:
         st.start_day, st.days_used(), _ok(ok)))
 
 
+def _t_first_run(tmpdir) -> None:
+    """试用从「第一次运行游戏」起算，而且起算日只定一次。
+
+    要验两件事：
+      1. 全新机器（两个文件都不存在）→ 一运行就落盘记账，起算日 = 今天、剩 7 天；
+      2. 之后每次运行**不会把起算日刷成今天** —— 否则永远剩 7 天，试用等于没有。
+    """
+    st = _temp_state(tmpdir, name="first.json", aux="first.state")
+    existed_before = os.path.isfile(st.main_path())
+    st.load()
+    created = os.path.isfile(st.main_path())
+    today = lic.today_index()
+    fresh = (not existed_before) and created
+    fresh = fresh and st.start_day == today and st.days == lic.TRIAL_DAYS
+    fresh = fresh and not st.licensed and st.days_left() == 7 and not st.is_expired()
+
+    # 模拟"第二天再打开"：把起算日往前挪一天再重新读盘，起算日必须原样保留
+    st.start_day = today - 1
+    st.save()
+    st2 = _temp_state(tmpdir, name="first.json", aux="first.state")
+    st2.load()
+    kept = (st2.start_day == today - 1 and st2.days_left() == 6
+            and not st2.is_expired())
+    ok = fresh and kept
+    print(" 10 试用起算 · 首次运行即记起算日=%s · 剩 %d 天 · 次日重开仍从原起算日算"
+          "（剩 %d 天）· %s" % (
+              "是" if created else "否", lic.TRIAL_DAYS, st2.days_left(), _ok(ok)))
+
+
+def _t_hard_lock() -> None:
+    """硬截止日：现在屏蔽中（恒不生效），开关打开后必须真的会锁。
+
+    屏蔽不能靠"把代码删掉"来实现 —— 删掉之后没人知道它曾经存在、也不知道
+    怎么恢复。开关 + 自检才是"屏蔽但保留"：今天不拦人，将来改一个 True 就能用。
+    """
+    import datetime
+    from game import config as cfg
+    saved = cfg.LOCK_DATE_ENABLED
+    far = datetime.datetime(2099, 1, 1)
+    near = datetime.datetime(2000, 1, 1)
+    try:
+        cfg.LOCK_DATE_ENABLED = False
+        off = cfg.lock_active(far)          # 屏蔽中：哪怕时间已经是 2099 年也不锁
+        cfg.LOCK_DATE_ENABLED = True
+        on_after = cfg.lock_active(far)     # 启用 + 已过截止日 → 锁
+        on_before = cfg.lock_active(near)   # 启用 + 还没到 → 放行
+    finally:
+        cfg.LOCK_DATE_ENABLED = saved
+    ok = (not off) and on_after and (not on_before)
+    print(" 11 硬截止日 · 屏蔽中=%s · 启用后已过期=%s · 启用后未到期=%s · %s" % (
+        "不锁" if not off else "竟然锁了",
+        "锁" if on_after else "没锁",
+        "不锁" if not on_before else "竟然锁了", _ok(ok)))
+
+
+def _t_paths() -> None:
+    """授权记录不能落在用户目录根下。
+
+    环境变量缺失时要退到 <用户目录>/AppData/xxx，而不是直接拿用户目录当默认
+    —— 否则会在人家家目录根下凭空多出一个 TowerDefense 文件夹。开发时真踩过：
+    沙箱里没有 APPDATA，跑一次测试就在 C:////Users////xxx//// 下留了一个。
+    """
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    roaming = os.path.join(home, "AppData", "Roaming")
+    if not os.path.isdir(roaming):
+        print(" 13 记录落点 · 跳过（本机没有 %s）" % roaming)
+        return
+    saved = os.environ.pop("APPDATA", None)
+    try:
+        main = lic.LicenseState().main_path()
+    finally:
+        if saved is not None:
+            os.environ["APPDATA"] = saved
+    expected = os.path.join(roaming, lic.DIR_NAME, "license.json")
+    litter = os.path.join(home, lic.DIR_NAME, "license.json")
+    ok = (main == expected) and (main != litter)
+    print(" 13 记录落点 · 缺 APPDATA 时=%s · 不落在家目录根=%s · %s" % (
+        "退到 AppData/Roaming" if main == expected else "跑到 %s" % main,
+        "是" if main != litter else "否（家目录被弄脏）", _ok(ok)))
+
+
 # ---------------------------------------------------------------- 界面接线
 
 def _t_menu_flow(tmpdir) -> None:
@@ -271,7 +352,7 @@ def _t_menu_flow(tmpdir) -> None:
     refused = "用过" in game.license_msg
 
     ok = blocked and allowed and typed == "A" and erased and activated and refused
-    print(" 10 界面接线 · 到期点开始=%s · 试用中点开始=%s · 打键进框=%s · 退格=%s "
+    print(" 12 界面接线 · 到期点开始=%s · 试用中点开始=%s · 打键进框=%s · 退格=%s "
           "· 提交=%s · 同码再提交=%s · %s" % (
               "拦到激活页" if blocked else "竟然放行",
               "进关卡" if allowed else "没反应",
@@ -309,7 +390,10 @@ def run() -> int:
         _t_no_secret()
         _t_delete_save(tmpdir)
         _t_aux_legacy(tmpdir)
+        _t_first_run(tmpdir)
+        _t_hard_lock()
         _t_menu_flow(tmpdir)
+        _t_paths()
     finally:
         lic.state = saved_state
         lic._machine_cache = saved_machine

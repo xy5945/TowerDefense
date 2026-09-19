@@ -3,6 +3,7 @@
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
+import datetime
 import json
 import os
 
@@ -13,11 +14,34 @@ SIDE_PANEL: int = 240
 MAP_W: int = WIDTH - SIDE_PANEL
 GRID_SIZE: int = 40
 
-# ---------- 游戏锁定日期 ----------
-# 已被「授权系统」（game/license.py）取代：到期判定交给试用/激活天数，
-# 这样已激活的学生不会被这个日期一刀切锁死。保留常量是为了将来想加
-# 「无论是否激活，到某天一律停服」的硬性截止日时有个现成的位置。
+# ---------- 游戏锁定日期（硬截止日 · 当前屏蔽中） ----------
+# 「无论是否激活，到某天一律停服」的硬性截止日，以前是唯一的限时手段。
+# 现在到期判定交给授权系统（game/license.py 的试用 / 激活天数），硬锁先屏蔽：
+# 日期一到就全员死锁的话，已激活的学生也进不去，连输激活码的机会都没有。
+#
+# 想启用：把 LOCK_DATE_ENABLED 改成 True，并把 LOCK_DATE 换成新的截止日。
+# 判定在 lock_active()，锁屏画面在 renderer.draw_lock_screen()，
+# 调用点是 main.py 里的 show_lock_window()。
+LOCK_DATE_ENABLED: bool = False
 LOCK_DATE = "2026-10-11"
+
+
+def lock_active(now: Optional[datetime.datetime] = None) -> bool:
+    """硬截止日是否已经生效。
+
+    屏蔽状态下（LOCK_DATE_ENABLED = False）**恒为 False** —— 也就是说
+    日期怎么改都不会锁，到期与否只看授权状态。
+
+    启用后：LOCK_DATE 当天仍可玩，过了当天 00:00 才锁（与原来的行为一致）。
+    now 只是给自检注入用的，正常调用不用传。
+    """
+    if not LOCK_DATE_ENABLED or not LOCK_DATE:
+        return False
+    try:
+        deadline = datetime.datetime.strptime(LOCK_DATE, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return (now or datetime.datetime.now()) > deadline
 
 
 # ---------- 主菜单布局 ----------

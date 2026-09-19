@@ -28,6 +28,7 @@
     第二埋点 %LOCALAPPDATA%/TowerDefense/.state
     放在两个不同的根目录下：学生删掉一份，另一份还在。
     任何一步读写失败都只是少一道防线，绝不抛异常、绝不影响游戏运行。
+    环境变量缺失时按 <用户目录>/AppData/xxx 找，**不会**直接落在用户目录根下。
 """
 import hashlib
 import hmac
@@ -67,6 +68,25 @@ DIR_NAME = "TowerDefense"
 _EPOCH_ORDINAL = date(1970, 1, 1).toordinal()
 
 _secret_cache = None
+
+
+def _base_dir(var: str, fallback_parts=()) -> str:
+    """取 APPDATA / LOCALAPPDATA 这类根目录。
+
+    Windows 上这两个变量一定有；万一没有（精简环境、跨平台跑），先按
+    <用户目录>/AppData/xxx 找，实在没有才退到用户目录本身。
+    **不能一上来就拿用户目录当默认值** —— 那会在人家的家目录根下凭空多出
+    一个 TowerDefense 文件夹，看着像病毒干的事（开发时就踩过一次）。
+    """
+    got = os.environ.get(var)
+    if got:
+        return got
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    if fallback_parts:
+        cand = os.path.join(home, *fallback_parts)
+        if os.path.isdir(cand):
+            return cand
+    return home
 
 
 # ---------------------------------------------------------------- 字符串处理
@@ -358,7 +378,7 @@ class LicenseState:
     def main_path(self) -> str:
         if self.main_path_override:
             return self.main_path_override
-        base = os.environ.get("APPDATA") or os.environ.get("USERPROFILE") or ""
+        base = _base_dir("APPDATA", ("AppData", "Roaming"))
         if not base:
             return ""
         return os.path.join(base, DIR_NAME, "license.json")
@@ -366,7 +386,7 @@ class LicenseState:
     def aux_path(self) -> str:
         if self.aux_path_override:
             return self.aux_path_override
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("USERPROFILE") or ""
+        base = _base_dir("LOCALAPPDATA", ("AppData", "Local"))
         if not base:
             return ""
         return os.path.join(base, DIR_NAME, ".state")

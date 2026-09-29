@@ -9,11 +9,16 @@
       · 学生自己编不出来 —— 有 HMAC 校验码兜着
       · 同一张码只能用一次 —— 本机用过的码记在指纹表里
 
-激活码的构成（12 字节，Base32 编码后 20 个字符）
+激活码的构成（13 字节，Base32 编码后 21 个字符）
     game_id   1 字节   游戏编号（tools/keygen 那边分配：塔防 = 2）
     machine   5 字节   学生报来的机器码原文
     days      2 字节   授权天数，大端序；0 表示永久
-    mac       4 字节   HMAC-SHA256(secret, 前 8 字节) 的前 4 字节
+    seq       1 字节   流水号，发码工具每次随机取一个没用过的
+    mac       4 字节   HMAC-SHA256(secret, 前 9 字节) 的前 4 字节
+
+为什么要有流水号：前三个字段全是定死的，同一台机器续同一个天数会算出
+**一模一样的码** —— 学生到期续期时会被"这张码本机用过了"拒掉。
+流水号参与 HMAC，所以改它算不出正确的校验码（堵住"改一位再激活一次"）。
 
 机器指纹（关键：必须与 Godot 端算出来一模一样）
     Godot 的 OS.get_unique_id() 在 Windows 上取的不是 MachineGuid，而是
@@ -43,9 +48,11 @@ from datetime import date
 GAME_ID = 2
 GAME_NAME = "守护稚码王国"
 
-CODE_BYTES = 12          # game_id 1 + machine 5 + days 2 + mac 4
+CODE_BYTES = 13          # game_id 1 + machine 5 + days 2 + seq 1 + mac 4
 MACHINE_BYTES = 5
-CODE_CHARS = 20
+PAYLOAD_BYTES = 9        # game_id 1 + machine 5 + days 2 + seq 1（HMAC 只算这 9 字节）
+MAC_BYTES = 4
+CODE_CHARS = 21
 MACHINE_CHARS = 8
 SECRET_BYTES = 32
 FINGERPRINT_BYTES = 4
@@ -291,8 +298,9 @@ def code_fingerprint(code: str) -> str:
 
 # ---------------------------------------------------------------- 验码
 
-def _payload(game_id: int, machine5: bytes, days: int) -> bytes:
-    return bytes([game_id]) + machine5 + days.to_bytes(2, "big")
+def _payload(game_id: int, machine5: bytes, days: int, seq: int = 0) -> bytes:
+    """HMAC 要保护的 9 字节。流水号在里头，改一位就验不过。"""
+    return bytes([game_id]) + machine5 + days.to_bytes(2, "big") + bytes([seq & 0xFF])
 
 
 def verify(code: str) -> dict:
@@ -309,21 +317,22 @@ def verify(code: str) -> dict:
 
     raw = b32_decode(code)
     if len(raw) != CODE_BYTES:
-        res["reason"] = "激活码应该是 20 个字符，请看看是不是抄漏了"
+        res["reason"] = "激活码应该是 21 个字符，请看看是不是抄漏了"
         return res
 
     gid = raw[0]
     machine5 = raw[1:1 + MACHINE_BYTES]
     days = int.from_bytes(raw[6:8], "big")
-    mac = raw[8:CODE_BYTES]
+    seq = raw[8]
+    mac = raw[9:CODE_BYTES]
 
     # 四道关卡，按代价从低到高排
     if gid != GAME_ID:
         res["reason"] = "这个激活码属于另一款游戏（编号 %d），用不到《%s》上" % (gid, GAME_NAME)
         return res
 
-    expect = hmac.new(sec, _payload(gid, machine5, days), hashlib.sha256).digest()
-    if expect[:4] != mac:
+    expect = hmac.new(sec, _payload(gid, machine5, days, seq), hashlib.sha256).digest()
+    if expect[:MAC_BYTES] != mac:
         res["reason"] = "激活码校验不通过，多半是有字符抄错了"
         return res
 

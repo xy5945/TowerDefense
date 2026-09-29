@@ -19,13 +19,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from game import license as lic  # noqa: E402
 
 # 以下三个常量都是发码工具真实产出的码，专门用来验「两端算法有没有对上」。
-#   python keygen.py -g tower_defense  -m GZTX-WIP2 -d 30
-#   python keygen.py -g tower_defense  -m GZTX-WIP2 -d 90
-#   python keygen.py -g code_survivors -m GZTX-WIP2 -d 30   （别款游戏的码）
+#   python keygen.py -g tower_defense  -m GZTX-WIP2 -d 30 -s 11
+#   python keygen.py -g tower_defense  -m GZTX-WIP2 -d 90 -s 12
+#   python keygen.py -g code_survivors -m GZTX-WIP2 -d 30 -s 13   （别款游戏的码）
+# 注意 21 位算法带了流水号（seq 进 HMAC），所以必须用 -s 钉住流水号，
+# 不然每次重发都会变，这三张就不是「固定标准答案」了。2026-09-29 重生成。
 TOOL_MACHINE = "GZTX-WIP2"
-TOOL_CODE = "AI3G-O6ZB-7IAB-5KHZ-3PPA"    # 本机 · 30 天
-TOOL_CODE2 = "AI3G-O6ZB-7IAF-UBG5-HMOQ"   # 本机 · 90 天
-OTHER_GAME_CODE = "AE3G-O6ZB-7IAB-4V66-BIAQ"   # 《代码幸存者》的码
+TOOL_CODE = "AI3G-O6ZB-7IAB-4C4E-BRYW-U"    # 本机 · 30 天
+TOOL_CODE2 = "AI3G-O6ZB-7IAF-UDAD-RSBZ-S"   # 本机 · 90 天
+OTHER_GAME_CODE = "AE3G-O6ZB-7IAB-4DJD-IQNG-C"   # 《代码幸存者》的码
 
 _ok_count = 0
 _fail_count = 0
@@ -41,10 +43,14 @@ def _ok(flag: bool) -> str:
 
 
 def _make_code(gid: int, machine5: bytes, days: int) -> str:
-    """用游戏端自己的算法造一个码 —— 扮演发码工具，专门测拒绝分支。"""
+    """用游戏端自己的算法造一个码 —— 扮演发码工具，专门测拒绝分支。
+
+    21 位算法的布局是 gid(1) + 机器(5) + 天数(2) + 流水号(1) + MAC(4)，
+    流水号也进 HMAC，少一个字节造出来的就是「太短」的废码。
+    """
     import hashlib
     import hmac as _hmac
-    payload = bytes([gid]) + machine5 + days.to_bytes(2, "big")
+    payload = bytes([gid]) + machine5 + days.to_bytes(2, "big") + b"\x00"
     mac = _hmac.new(lic.secret(), payload, hashlib.sha256).digest()[:4]
     return lic.group(lic.b32_encode(payload + mac))
 

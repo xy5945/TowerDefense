@@ -78,6 +78,122 @@ LIC_INPUT_RECT: Tuple[int, int, int, int] = (230, 272, 500, 46)
 LIC_BTN_BACK: Tuple[int, int, int, int] = (330, 400, 140, 44)
 LIC_BTN_OK: Tuple[int, int, int, int] = (490, 400, 140, 44)
 
+# ---------- 打码补给 ----------
+# 规则（用户定的，改之前先想清楚为什么）：
+#   每一波打完（第 1 ~ 9 波）都弹一次，第 10 波打完直接通关不给 ——
+#   钱到手也花不掉，那道题纯属浪费时间。
+#   金币 = (关数 - 1) × 10 + 波数 × 10
+#     第 1 关：第 1 波 10 → 第 9 波 90，波波 +10
+#     第 2 关：第 1 波 20 → ……；第 3 关第 1 波 30，以此类推。
+#     金额只由「第几关 + 第几波」决定，跟领没领过无关：
+#     用「已领次数」算的话，放弃一次就会原地踏步，跟「每波 +10」对不上。
+#   ⚠️ 基数从原来的 50 起手降到了 10：原来第 1 关第 2 波就给 50，
+#     塔随便摆，前几关完全没有取舍，游戏太松了。
+#   漏怪累计 7 次弹一次补救，回 2 点血 —— 兜底，不是救命稻草。
+#     回太多会把三档难度的 lives_bonus（±5）整个抹平。
+#   补给始终开着，没有开关 —— 这是本作练编程的入口，关掉就名不副实了。
+SUPPLY_GOLD_PER_LEVEL: int = 10   # 每多打一关，补给起手 +10
+SUPPLY_GOLD_PER_WAVE: int = 10    # 每多打一波，补给 +10
+LEAK_RESCUE_AT: int = 7
+LEAK_RESCUE_HEAL: int = 2
+# 发补给的波次区间（第 10 波打完就通关，不给）
+SUPPLY_FIRST_WAVE: int = 1
+SUPPLY_LAST_WAVE: int = 9
+# 清场到弹窗之间的缓冲：刚打完立刻弹太突兀，留一口气看清场上还剩什么
+SUPPLY_POPUP_DELAY: float = 1.0
+
+
+def supply_gold(level: int, wave: int) -> int:
+    """第 level 关第 wave 波清完后，这一次补给给多少钱。
+
+    只由「第几关 + 第几波」决定，跟之前领没领过无关 ——
+    game 与测试都从这里取，免得两边算出一个不同的数。
+    """
+    return (level - 1) * SUPPLY_GOLD_PER_LEVEL + wave * SUPPLY_GOLD_PER_WAVE
+
+
+# 代码难度档位（对应题库 Lv1-8）：
+#   Lv1-3 关键字 / Lv4-5 一两行 / Lv6-7 四行内 / Lv8 完整小题
+# 难度跟着波次往上爬：1-3 波认关键字 → 4-5 波单行 → 6-7 波多行 → 8-9 波完整小题
+CODE_LEVEL_BY_WAVE: Dict[int, int] = {
+    1: 1, 2: 2, 3: 3,
+    4: 4, 5: 5,
+    6: 6, 7: 7,
+    8: 8, 9: 8,
+}
+# 补给对话框上的难度说法，给孩子看的
+CODE_LEVEL_NAME: Dict[int, str] = {
+    1: "认关键字", 2: "认关键字", 3: "认关键字",
+    4: "一行代码", 5: "一两行代码",
+    6: "几行代码", 7: "几行代码",
+    8: "一段完整小题",
+}
+
+# ---------- 打码补给面板布局（960×600） ----------
+# 面板几乎占满 600 高的窗口：打字这件事要地方，能挤出来的都给它。
+SUP_PANEL_X: int = 150
+SUP_PANEL_Y: int = 20
+SUP_PANEL_W: int = 660
+SUP_PANEL_H: int = 556
+SUP_BTN_W: int = 170
+SUP_BTN_H: int = 48
+SUP_BTN_Y: int = 512
+
+# 代码区：**高度自适应** —— 几行代码给几行高，不多占。
+# 只留最低 3 行的底，是为了让只有一行代码的题也像个编辑器，不是一条窄缝。
+# 没花掉的那部分，全部让给下面的打字区。
+SUP_BOX_X: int = SUP_PANEL_X + 26
+SUP_BOX_Y: int = 104
+SUP_BOX_W: int = SUP_PANEL_W - 52
+SUP_CODE_PAD: int = 12
+SUP_CODE_LINE_H: int = 24
+SUP_CODE_FONT: int = 19
+SUP_CODE_MIN_LINES: int = 3
+
+# 状态行（出错提示）：跟着代码区底部走
+SUP_STATUS_FONT: int = 18
+SUP_STATUS_GAP: int = 8        # 代码区底 -> 状态行
+SUP_INPUT_GAP: int = 6         # 状态行 -> 打字区
+
+# 打字区：从代码区下面一直排到按钮上面，题目短它就高，题目长它才让地方。
+# 多行框，不再是一行回显 —— 孩子要能回看自己打过的几行。
+SUP_INPUT_PAD: int = 12
+SUP_INPUT_LINE_H: int = 24
+SUP_INPUT_FONT: int = 19
+SUP_INPUT_BOTTOM: int = SUP_BTN_Y - 12
+
+
+def supply_typing_layout(lines: int) -> dict:
+    """按「这一题有几行代码」算出打字界面各块的纵向位置。
+
+    game / renderer 都从这里取，避免两边改一半（之前吃过这个亏）。
+    返回：
+      box_y / box_h   代码区方框的顶边与高度
+      status_y        状态行文字的顶边
+      input           (x, y, w, h) 打字区方框
+    """
+    code_lines = max(int(lines), SUP_CODE_MIN_LINES)
+    box_h = code_lines * SUP_CODE_LINE_H + SUP_CODE_PAD * 2
+    status_y = SUP_BOX_Y + box_h + SUP_STATUS_GAP
+    input_top = status_y + SUP_STATUS_FONT + SUP_INPUT_GAP + 4
+    input_h = max(SUP_INPUT_LINE_H * 2, SUP_INPUT_BOTTOM - input_top)
+    return {
+        "box_y": SUP_BOX_Y,
+        "box_h": box_h,
+        "status_y": status_y,
+        "input": (SUP_BOX_X, input_top, SUP_BOX_W, input_h),
+    }
+
+
+def supply_button_rect(index: int) -> Tuple[int, int, int, int]:
+    """补给对话框的两个按钮：0 兑换补给 / 1 放弃补给。"""
+    gap = 30
+    total = SUP_BTN_W * 2 + gap
+    x0 = WIDTH // 2 - total // 2
+    x = x0 + index * (SUP_BTN_W + gap)
+    return x, SUP_BTN_Y, SUP_BTN_W, SUP_BTN_H
+
+
 # ---------- 关卡名称（1-10关） ----------
 LEVEL_NAMES: List[str] = [
     "边境村庄",

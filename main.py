@@ -108,6 +108,13 @@ def main() -> None:
             elif event.type == pygame.KEYDOWN:
                 # 激活页要吃字符（含 Ctrl+V 粘贴），所以整事件传下去
                 game.handle_keydown(event)
+            elif event.type == pygame.TEXTINPUT:
+                # 系统输入法上屏的文字（中文/英文/标点都走这里）：
+                # 只有打码框开着时才收，别处一律忽略，免得地图上误触
+                game.handle_textinput(event.text)
+            elif event.type == pygame.TEXTEDITING:
+                # 输入法正在拼、还没上屏的字：只回显，不算进已打内容
+                game.handle_textediting(getattr(event, "text", ""))
             elif event.type == pygame.MOUSEWHEEL:
                 game.handle_scroll(event.y)
 

@@ -14,8 +14,30 @@ from game.config import (
     MENU_BTN_W, MENU_DIFF_Y, MENU_DIFF_H, menu_button_rect,
     LIC_PANEL_X, LIC_PANEL_Y, LIC_PANEL_W, LIC_PANEL_H,
     LIC_INPUT_RECT, LIC_BTN_BACK, LIC_BTN_OK,
+    SUP_PANEL_X, SUP_PANEL_Y, SUP_PANEL_W, SUP_PANEL_H,
+    SUP_BOX_X, SUP_BOX_W,
+    SUP_CODE_PAD, SUP_CODE_LINE_H, SUP_CODE_FONT,
+    SUP_STATUS_FONT, SUP_INPUT_PAD, SUP_INPUT_LINE_H, SUP_INPUT_FONT,
+    supply_typing_layout,
+    CODE_LEVEL_NAME, supply_button_rect,
 )
 from game.assets import fonts
+
+# 代码区必须等宽：中文黑体的 ASCII 不保证等宽，代码会歪。
+# Consolas 是 Windows 自带的，取不到就退回中文字体（会丑但不出错）。
+_mono_cache = {}
+
+
+def _mono(size: int):
+    key = size
+    if key not in _mono_cache:
+        try:
+            f = pygame.font.SysFont("consolas", size)
+            f.render("iintt", True, (255, 255, 255))  # 试探一下真能渲染
+            _mono_cache[key] = f
+        except Exception:
+            _mono_cache[key] = fonts.get(size)
+    return _mono_cache[key]
 from game.license import format_input as format_code
 from game.utils import (
     draw_transparent_circle,
@@ -283,6 +305,209 @@ class Renderer:
         self.screen.blit(txt_shadow, (btn_rect.centerx - txt_shadow.get_width() // 2 + 1, btn_rect.centery - txt_shadow.get_height() // 2 + 1))
         self.screen.blit(txt_surf, (btn_rect.centerx - txt_surf.get_width() // 2, btn_rect.centery - txt_surf.get_height() // 2))
 
+    # ============================================================
+    #  打码补给
+    # ============================================================
+
+    def draw_supply(
+        self,
+        kind: str,
+        phase: str,
+        gold: int,
+        level: int,
+        challenge: dict,
+        typed: str,
+        status: str,
+        status_bad: bool,
+        match: Optional[dict] = None,
+        heal: int = 2,
+        ime: str = "",
+    ) -> None:
+        """打码补给对话框。
+
+        两个阶段共用一个面板：
+          ask    只问「要不要换」，看清奖励再决定
+          typing 上面是要照打的代码（逐字符染色），下面是进度/错误提示
+
+        画在最上层：这段时间游戏是暂停的，所以底下那层战场要压暗但不能全糊掉，
+        孩子关掉对话框还得立刻接着看场面。
+        """
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 170))
+        self.screen.blit(overlay, (0, 0))
+
+        panel = pygame.Rect(SUP_PANEL_X, SUP_PANEL_Y, SUP_PANEL_W, SUP_PANEL_H)
+        pygame.draw.rect(self.screen, (24, 22, 34), panel, border_radius=12)
+        pygame.draw.rect(self.screen, (120, 105, 72), panel, 2, border_radius=12)
+        cx = panel.centerx
+
+        if phase == 'ask':
+            self._draw_supply_ask(panel, cx, kind, gold, level, heal)
+        else:
+            self._draw_supply_typing(panel, cx, challenge, typed, status,
+                                     status_bad, match or {}, ime)
+
+        # 按钮：ask 是「换 / 不换」，typing 是「重打 / 放弃」
+        labels = ('兑换补给', '放弃补给') if phase == 'ask' else ('清空重打', '放弃补给')
+        styles = (
+            ((58, 132, 68), (84, 178, 94), (38, 96, 48)),
+            ((70, 70, 90), (120, 120, 148), (45, 45, 58)),
+        )
+        for i in range(2):
+            r = pygame.Rect(supply_button_rect(i))
+            fill, hover, border = styles[i]
+            pygame.draw.rect(self.screen, fill, r, border_radius=8)
+            pygame.draw.rect(self.screen, border, r, 2, border_radius=8)
+            lbl = fonts.get(22).render(labels[i], True, (245, 240, 225))
+            self.screen.blit(lbl, (r.centerx - lbl.get_width() // 2,
+                                   r.centery - lbl.get_height() // 2))
+
+    def _draw_supply_ask(self, panel, cx, kind, gold, level, heal) -> None:
+        # 内容整体往下挪：面板加高之后，原来的 y 会挤在最上面一截
+        title = fonts.get(32).render("神秘口令", True, (255, 220, 130))
+        self.screen.blit(title, (cx - title.get_width() // 2, panel.y + 150))
+
+        sub = fonts.get(18).render("输入一段 C++ 代码，就能领走补给", True, (185, 175, 155))
+        self.screen.blit(sub, (cx - sub.get_width() // 2, panel.y + 200))
+
+        if kind == 'heal':
+            big = fonts.get(48).render("+%d 生命" % heal, True, (255, 205, 110))
+            note = "你漏了 7 个怪，这是最后一次兜底"
+        else:
+            big = fonts.get(48).render("%d 金币" % gold, True, (255, 215, 90))
+            note = "打对立刻到账 · 打错不扣任何东西"
+        self.screen.blit(big, (cx - big.get_width() // 2, panel.y + 252))
+
+        note_s = fonts.get(17).render(note, True, (170, 190, 165))
+        self.screen.blit(note_s, (cx - note_s.get_width() // 2, panel.y + 318))
+
+        lv_name = CODE_LEVEL_NAME.get(level, "")
+        diff = fonts.get(20).render("本次难度：%s" % lv_name, True, (150, 200, 155))
+        self.screen.blit(diff, (cx - diff.get_width() // 2, panel.y + 364))
+
+    def _draw_supply_typing(self, panel, cx, challenge, typed, status,
+                            status_bad, match, ime="") -> None:
+        target = str(challenge.get("text", ""))
+        tip = str(challenge.get("tip", ""))
+        lv = int(challenge.get("level", 1))
+
+        head = fonts.get(21).render("照着打一遍就能领走", True, (255, 220, 130))
+        self.screen.blit(head, (panel.x + 30, panel.y + 24))
+
+        lv_name = CODE_LEVEL_NAME.get(lv, "")
+        lv_s = fonts.get(15).render("Lv%d · %s" % (lv, lv_name), True, (150, 160, 185))
+        self.screen.blit(lv_s, (panel.right - 30 - lv_s.get_width(), panel.y + 30))
+
+        if tip:
+            tip_s = fonts.get(16).render("· " + tip, True, (130, 200, 140))
+            self.screen.blit(tip_s, (panel.x + 30, panel.y + 58))
+
+        # 纵向下刀的位置全交给 config.supply_typing_layout：
+        # 代码区按行数取高，剩下的通通留给打字区。
+        lines = target.split("\n")
+        lay = supply_typing_layout(len(lines))
+        box = pygame.Rect(SUP_BOX_X, lay["box_y"], SUP_BOX_W, lay["box_h"])
+
+        pygame.draw.rect(self.screen, (16, 15, 24), box, border_radius=8)
+        pygame.draw.rect(self.screen, (78, 72, 96), box, 2, border_radius=8)
+
+        # 已打对的暗绿、当前字符高亮、没打的浅灰
+        tpos = int(match.get("tpos", 0))
+        err = bool(match.get("err", False))
+        font_mono = _mono(SUP_CODE_FONT)
+        x0 = box.x + SUP_CODE_PAD
+        y = box.y + SUP_CODE_PAD - 4
+        flat = 0
+        for ln in lines:
+            for ch in ln:
+                cw = font_mono.size(ch)[0]
+                if flat < tpos:
+                    color = (95, 165, 85)
+                elif flat == tpos:
+                    if err:
+                        pygame.draw.rect(self.screen, (122, 32, 32),
+                                         pygame.Rect(x0 - 1, y - 1, cw + 2, SUP_CODE_LINE_H))
+                        color = (255, 218, 218)
+                    else:
+                        pygame.draw.rect(self.screen, (107, 74, 16),
+                                         pygame.Rect(x0 - 1, y - 1, cw + 2, SUP_CODE_LINE_H))
+                        color = (255, 233, 168)
+                else:
+                    color = (194, 203, 216)
+                self.screen.blit(font_mono.render(ch, True, color), (x0, y))
+                x0 += cw
+                flat += 1
+            x0 = box.x + SUP_CODE_PAD
+            y += SUP_CODE_LINE_H
+            flat += 1  # 换行符也算一个字符位置
+
+        # 状态行：只报「错在第几行第几个」，不显示进度数字 ——
+        # 数字符会把孩子的注意力从代码挪到计数器上
+        color = (235, 120, 110) if status_bad else (155, 165, 185)
+        st = fonts.get(SUP_STATUS_FONT).render(status, True, color)
+        self.screen.blit(st, (box.x + 4, lay["status_y"]))
+
+        self._draw_supply_input(lay["input"], typed, ime)
+
+    def _draw_supply_input(self, rect, typed, ime: str = "") -> None:
+        """打字区：一个多行的输入框，能回看自己打过的几行。
+
+        孩子打长题时是要回头看的，只显示光标那一行的话，
+        他看不到自己前面写错了什么，改都不知道从哪改起。
+        """
+        box = pygame.Rect(rect)
+        pygame.draw.rect(self.screen, (12, 12, 20), box, border_radius=8)
+        pygame.draw.rect(self.screen, (96, 88, 120), box, 2, border_radius=8)
+
+        font = _mono(SUP_INPUT_FONT)
+        x0 = box.x + SUP_INPUT_PAD
+        y0 = box.y + SUP_INPUT_PAD - 4
+        max_w = box.w - SUP_INPUT_PAD * 2
+        # 框里放得下几行；放不下的往上滚（跟终端一样，跟着光标走）
+        cap = max(1, (box.h - SUP_INPUT_PAD * 2) // SUP_INPUT_LINE_H)
+
+        if not typed:
+            hint = fonts.get(15).render(
+                "在这里照着上面的代码打字（打错用退格删，要换行按回车）",
+                True, (105, 105, 128))
+            self.screen.blit(hint, (x0, y0 + 3))
+            caret_x, caret_y = x0, y0
+        else:
+            rows = []
+            for raw in typed.split("\n"):
+                while len(raw) > 1 and font.size(raw)[0] > max_w:
+                    raw = raw[1:]        # 一行打太长了就从头裁，光标那头必须留着
+                rows.append(raw)
+            shown = rows[-cap:]
+            # 上面还有被卷走的内容：顶上给一条淡淡的提示线
+            if len(rows) > len(shown):
+                pygame.draw.line(self.screen, (70, 66, 92),
+                                 (box.x + 6, box.y + 5), (box.right - 6, box.y + 5), 2)
+            y = y0
+            for i, ln in enumerate(shown):
+                self.screen.blit(font.render(ln, True, (212, 220, 235)), (x0, y))
+                if i == len(shown) - 1:
+                    caret_x = x0 + font.size(ln)[0]
+                    caret_y = y
+                y += SUP_INPUT_LINE_H
+
+        # 输入法正在拼的字：紧跟光标，用蓝字 + 下划线表示「还没上屏」
+        if ime:
+            ime_s = font.render(ime, True, (140, 200, 235))
+            if caret_x + ime_s.get_width() > box.right - SUP_INPUT_PAD:
+                caret_x = box.right - SUP_INPUT_PAD - ime_s.get_width()
+            pygame.draw.line(self.screen, (140, 200, 235),
+                             (caret_x, caret_y + SUP_INPUT_LINE_H - 4),
+                             (caret_x + ime_s.get_width(), caret_y + SUP_INPUT_LINE_H - 4))
+            self.screen.blit(ime_s, (caret_x, caret_y))
+            caret_x += ime_s.get_width() + 2
+
+        # 光标
+        if (pygame.time.get_ticks() // 500) % 2 == 0:
+            pygame.draw.line(self.screen, (220, 220, 235),
+                             (caret_x, caret_y + 2),
+                             (caret_x, caret_y + SUP_INPUT_LINE_H - 6))
+
     def draw_guide(self, scroll_offset: int) -> None:
         """游戏说明页面：防御塔和敌人的详细介绍，可滚动。v1.1.3 重设计。"""
         # 背景渐变
@@ -476,6 +701,45 @@ class Renderer:
             "第 10 关通关仅展示战绩，无金币加成。",
         ], (255, 200, 100))
 
+        y += 8
+
+        # ===== 打码补给：这是本作跟别的塔防最不一样的地方，独立成一章 =====
+        draw_section_header("◆ 打码补给 · 边玩边练 C++ ◆")
+
+        intro_text = (
+            "这一作不只是塔防：它是一次代码熟练度的训练。"
+            "孩子为了拿补给，会一遍遍亲手打出 C++ 里最常用的那些写法，"
+            "打得多了，手就熟了 —— 玩得开心，代码也在不知不觉中练出来了。"
+        )
+        n = self._count_wrapped_lines(intro_text, font_body, WIDTH - 200)
+        self._draw_wrapped_text(intro_text, font_body, gold_light, 70, y, WIDTH - 200, 24)
+        y += n * 24 + 10
+
+        draw_subsection("题目覆盖的范围", [
+            "全部取自 C++ 入门到进阶最常用的内容，对应 GESP C++ 一至四级的高频考点：",
+            "变量与类型 int / double / char / bool，标准输入输出 cin / cout。",
+            "运算符与表达式、自增自减、整除取余 (% 与 / 的区别)、累加累乘。",
+            "分支结构 if / else / else if、switch-case-default。",
+            "循环结构 for（正序/倒序/步长）、while、do-while，以及 break / continue。",
+            "数组定义与遍历、二维数组、求最大值 / 求和 / 斐波那契等经典小题。",
+            "完整小题：两数比大小、成绩分档、九九乘法表等真题，一行一行照真代码写。",
+        ], cyan)
+
+        draw_subsection("怎么给补给", [
+            "第 1 至第 9 波，每一波清完都会弹一次（第 10 波打完直接通关，不再出题）。",
+            "照着上面的代码打一遍，全打对就立刻到账；放弃什么都不扣，游戏继续。",
+            "金额 = (关数-1)×10 + 波数×10：第 1 关第 1 波 10 金币，第 9 波 90；第 2 关第 1 波 20。",
+            "题目越来越难：1-3 波认关键字 → 4-5 波单行语句 → 6-7 波多行片段 → 8-9 波完整小题。",
+            "漏怪累计 7 个会另弹一次「补救」：打对回 2 点血 —— 是兜底，不是救命稻草。",
+        ], (150, 220, 160))
+
+        draw_subsection("打字时要注意的", [
+            "中文输入法可以直接用（想切回英文也行）；支持退格删除、Tab 缩进、回车换行。",
+            "自动换行时会照上一行的缩进补位，跟真正的代码编辑器一个习惯。",
+            "空格数量和全角标点不计较 —— 那是输入法的问题，不是代码的问题。",
+            "但缩进必须真的打出来：不打缩进是练不会代码结构的。",
+        ], (200, 200, 220))
+
         # ===== 通用提示 =====
         draw_section_header("◆ 战术提示 ◆")
 
@@ -614,14 +878,16 @@ class Renderer:
         self.screen.blit(section, (cx - 200, y))
         y += font_section.get_height() + 8
 
+        # 真实统计口径：game/ 下 15 个源文件 + main.py，空行注释都算进去
         info_lines = [
-            ("版本", "v1.0.0"),
+            ("版本", "v1.1.0"),
             ("引擎", "Python + pygame"),
-            ("代码量", "3,400+ 行 Python"),
-            ("模块数", "11 个"),
+            ("代码量", "6,700+ 行 Python"),
+            ("模块数", "16 个源文件"),
             ("关卡", "10 关（边境村庄 → 地狱深渊）"),
             ("塔种", "5 种（弩台/冰塔/毒塔/火炮/激光）"),
             ("敌人", "5 种（步兵/行者/魔像/领主/飞灵）"),
+            ("特色", "每波清完要打一段 C++ 代码才能领补给"),
         ]
         for label, value in info_lines:
             label_surf = font_body.render(label, True, dim_text)
@@ -639,13 +905,58 @@ class Renderer:
 
         org_lines = [
             "我们相信每个孩子都能创造自己的世界。",
-            "编程不是枯燥的代码,而是创造的工具。",
-            "稚码园机器人编程,用游戏点燃孩子的代码梦想。",
+            "编程不是枯燥的代码，而是创造的工具。",
+            "稚码园机器人编程，用游戏点燃孩子的代码梦想。",
         ]
         for line in org_lines:
             surf = font_body.render(line, True, white)
             self.screen.blit(surf, (cx - surf.get_width() // 2, y))
             y += font_body.get_height() + 6
+
+        belief = font_body.render("「我们不教孩子背代码，我们让孩子在创造里用熟它。」", True, gold_light)
+        self.screen.blit(belief, (cx - belief.get_width() // 2, y + 6))
+        y += font_body.get_height() + 12
+
+        y += 6
+
+        # ===== 为什么游戏里要写代码 =====
+        section = font_section.render("◆ 边玩边练：游戏里的代码训练", True, gold)
+        self.screen.blit(section, (cx - 200, y))
+        y += font_section.get_height() + 8
+
+        practice_lines = [
+            "每波敌人打完，会出现一次「神秘口令」：照着屏",
+            "幕上的 C++ 代码打一遍，打对了才能领走补给。",
+            "题库全部取自 C++ 入门到进阶最常用的写法，",
+            "覆盖 GESP C++ 一至四级的高频关键字和标准语句。",
+            "孩子为了多拿金币，会主动反复练这些内容 ——",
+            "手熟了，代码就不再是拦路虎。",
+        ]
+        for line in practice_lines:
+            surf = font_body.render(line, True, white)
+            self.screen.blit(surf, (cx - surf.get_width() // 2, y))
+            y += font_body.get_height() + 4
+
+        y += 4
+        funderline = font_small.render("开心地玩着，代码熟练度不知不觉就上去了。", True, gold_light)
+        self.screen.blit(funderline, (cx - funderline.get_width() // 2, y))
+        y += font_small.get_height() + 10
+
+        y += 4
+
+        # ===== 姊妹作品 =====
+        section = font_section.render("◆ 姊妹作品", True, gold)
+        self.screen.blit(section, (cx - 200, y))
+        y += font_section.get_height() + 8
+
+        sister_lines = [
+            "《代码幸存者》：Godot 开发的生存射击，",
+            "升级时同样要打 C++ 代码，两作共用一套题库。",
+        ]
+        for line in sister_lines:
+            surf = font_body.render(line, True, white)
+            self.screen.blit(surf, (cx - surf.get_width() // 2, y))
+            y += font_body.get_height() + 4
 
         y += 8
 

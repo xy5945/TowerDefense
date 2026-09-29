@@ -13,8 +13,13 @@ from game.config import (
     load_paths, DIFFICULTY_CONFIGS, calc_star_rating, STAR_REWARD_COEFF,
     MENU_DIFF_Y, MENU_DIFF_H, menu_button_rect,
     LIC_BTN_BACK, LIC_BTN_OK,
+    SUPPLY_FIRST_WAVE, SUPPLY_LAST_WAVE, SUPPLY_POPUP_DELAY, supply_gold,
+    LEAK_RESCUE_AT, LEAK_RESCUE_HEAL,
+    CODE_LEVEL_BY_WAVE, CODE_LEVEL_NAME, supply_button_rect,
+    supply_typing_layout, SUP_INPUT_LINE_H,
 )
 from game import license as lic
+from game import code_challenge as cc
 from game.assets import audio, images
 from game.effects import ParticlePool, LaserManager
 from game.enemy import Enemy
@@ -56,6 +61,32 @@ class Game:
         self.preview_delay_timer: float = 0.0
         self.preview_visible: bool = False
         self.preview_text: str = ""
+
+        # 打码补给：始终开着，没有开关 —— 这是本作练编程的入口。
+        # 补给对话框：phase ''=不显示 / 'ask'=问要不要换 / 'typing'=正在打码
+        self.supply_phase: str = ''
+        self.supply_kind: str = ''        # 'gold' 金币补给 / 'heal' 漏怪补救
+        self.supply_gold: int = 0
+        self.supply_level: int = 1        # 代码难度档位 1-8
+        self.supply_challenge: dict = {}
+        self.supply_typed: str = ''
+        self.supply_status: str = ''
+        self.supply_status_bad: bool = False
+        self.supply_match: dict = {}      # 最近一次的比对结果，渲染染色要用
+        self.supply_done_t: float = -1.0  # 全打对后的收尾计时，>=0 表示已通关
+        self.supply_taken: int = 0        # 本关已领过几次补给（只统计，不参与金额计算）
+        self.leak_count: int = 0          # 漏怪累计，满 LEAK_RESCUE_AT 弹一次补救
+        self.supply_queue: list = []      # 本波结束待弹的对话框，按序弹
+        # 清场到弹窗之间的缓冲倒计时：>0 表示「刚打完，先让场面静一秒」
+        self.supply_delay: float = 0.0
+        # 中文输入法正在拼的字（还没上屏），只在回显行里显示，不进 supply_typed
+        self.supply_ime: str = ""
+        # 系统文本输入（IME）是否已开启：进了打码才开，退出就关，
+        # 免得在地图上按键盘时系统输入法候选框乱飘
+        self.text_input_on: bool = False
+        # 收到过 TEXTINPUT 就说明这条通道是通的；没收到之前先用 KEYDOWN 兜底
+        self._ime_ok: bool = False
+        self._pending_char: str = ""      # KEYDOWN 先收下，等一帧看 TEXTINPUT 来不来
 
         self.red_flash_timer: float = 0.0
 
@@ -158,6 +189,18 @@ class Game:
         self.level_elapsed = 0.0
         self.level_background = images.load_background(self.current_level, MAP_W, HEIGHT)
         self.red_flash_timer = 0.0
+        self.supply_taken = 0
+        self.leak_count = 0
+        self.supply_queue = []
+        self.supply_phase = ''
+        self.supply_kind = ''
+        self.supply_typed = ''
+        self.supply_challenge = {}
+        self.supply_done_t = -1.0
+        self.supply_delay = 0.0
+        self.supply_ime = ""
+        self._pending_char = ""
+        self._stop_text_input()
         self.hovered_tower = None
 
     def _load_menu_bg(self) -> None:
@@ -198,6 +241,13 @@ class Game:
 
     def start_wave(self) -> None:
         if self.wave < 10 and not self.wave_active and not self.preview_visible and self.preview_delay_timer <= 0:
+            # 补给还在那 1 秒缓冲里没弹出来，孩子就已经点了开战：
+            # 先把补给按「刚打完的那一波」结算掉再开波 ——
+            # 顺序不能反，反了金额就按新波次算，白送一档。
+            if self.supply_delay > 0:
+                self.supply_delay = 0.0
+                self._queue_supplies()
+                self._pump_supply()
             self._commit_wave()
 
     def _commit_wave(self) -> None:
@@ -236,6 +286,158 @@ class Game:
         for e_type, hp, speed, reward, skill in entries:
             enemy = Enemy(self.path, hp, speed, e_type, reward, skill)
             self.enemies.append(enemy)
+
+    # ============================================================
+    #  打码补给
+    # ============================================================
+
+    def _queue_supplies(self) -> None:
+        """波次结束时排好要弹的对话框：先漏怪补救，再金币补给。
+
+        两个都攒到波末才弹，是为了不打断战斗 —— 战斗中弹窗会把孩子
+        从地图上拽出来，那正是他最需要盯着场面的时刻。
+        """
+        self.supply_queue = []
+        if self.leak_count >= LEAK_RESCUE_AT:
+            self.supply_queue.append('heal')
+        if SUPPLY_FIRST_WAVE <= self.wave <= SUPPLY_LAST_WAVE:
+            self.supply_queue.append('gold')
+
+    def _pump_supply(self) -> None:
+        """弹队列里的下一个；队列空了就回到游戏。"""
+        if not self.supply_queue:
+            return
+        self._open_supply(self.supply_queue.pop(0))
+
+    def _open_supply(self, kind: str) -> None:
+        self.supply_kind = kind
+        self.supply_phase = 'ask'
+        self.supply_typed = ''
+        self.supply_status = ''
+        self.supply_status_bad = False
+        self.supply_done_t = -1.0
+        self.supply_challenge = {}
+        if kind == 'heal':
+            # 漏怪补救：兜底就得用最难的题换，不然「漏怪反而有便宜」不成立
+            self.supply_gold = 0
+            self.supply_level = 8
+        else:
+            # 金额只由「第几关 + 第几波」决定，跟领没领过无关：
+            # 用「已领次数」算的话，放弃一次就会原地踏步，跟「每波 +10」对不上。
+            self.supply_gold = supply_gold(self.current_level, self.wave)
+            self.supply_level = CODE_LEVEL_BY_WAVE.get(self.wave, 8)
+        self.state = 'supply'
+
+    # ---- 系统文本输入（中文输入法）----
+    # 打码框要能吃中文：孩子切到中文输入法时，拼音是先「拼」再「上屏」的。
+    # 只认 KEYDOWN 的 unicode 是不够的 —— 拼的过程 unicode 是空的，
+    # 上屏的汉字也不一定给 unicode。所以进打字就开系统文本输入，
+    # 用 TEXTINPUT 事件收上屏的文字，TEXTEDITING 只拿去回显拼到一半的字。
+    def _start_text_input(self) -> None:
+        if self.text_input_on:
+            return
+        try:
+            # 候选框落在打字区第一行，不然它会飘到窗口角落，孩子找不着
+            lines = len(str(self.supply_challenge.get('text', '') or '').split("\n"))
+            ix, iy, iw, _ = supply_typing_layout(lines)["input"]
+            pygame.key.set_text_input_rect(pygame.Rect(ix, iy, iw, SUP_INPUT_LINE_H))
+            pygame.key.start_text_input()
+            self.text_input_on = True
+        except Exception:
+            # 老版本 pygame / 无窗口环境没有这套 API：退回 KEYDOWN 收 ASCII
+            self.text_input_on = False
+
+    def _stop_text_input(self) -> None:
+        if not self.text_input_on:
+            return
+        try:
+            pygame.key.stop_text_input()
+        except Exception:
+            pass
+        self.text_input_on = False
+        self.supply_ime = ""
+
+    def handle_textinput(self, text: str) -> None:
+        """系统文本输入上屏：中文、英文、标点一视同仁，照样能打错、能删。"""
+        # 走到这儿就证明 TEXTINPUT 通道是通的，KEYDOWN 那边可以彻底放手了
+        self._ime_ok = True
+        self._pending_char = ""
+        if self.state != 'supply' or self.supply_phase != 'typing':
+            return
+        if not text:
+            return
+        self.supply_ime = ""
+        self.supply_typed += text
+        self._refresh_code_status()
+
+    def handle_textediting(self, text: str) -> None:
+        """输入法正在拼的字：只回显，不算进已打内容。"""
+        self.supply_ime = text if (
+            self.state == 'supply' and self.supply_phase == 'typing') else ""
+
+    def _start_typing(self) -> None:
+        self.supply_challenge = cc.build(self.supply_level)
+        self.supply_typed = ''
+        self.supply_phase = 'typing'
+        self.supply_done_t = -1.0
+        self.supply_ime = ""
+        self._pending_char = ""
+        self._start_text_input()
+        self._refresh_code_status()
+
+    def _refresh_code_status(self) -> None:
+        target = str(self.supply_challenge.get('text', ''))
+        st = cc.match_state(target, self.supply_typed)
+        self.supply_match = st
+        if st['done']:
+            self.supply_status = '全对！正在发放补给…'
+            self.supply_status_bad = False
+            if self.supply_done_t < 0:
+                self.supply_done_t = 0.0
+            return
+        self.supply_done_t = -1.0
+        if st['err']:
+            if st['tpos'] >= len(target):
+                self.supply_status = '打多了 · 把多出来的部分删掉就行'
+            else:
+                line, col = cc.pos_to_line_col(target, st['tpos'])
+                self.supply_status = '第 %d 行第 %d 个字符不对' % (line, col)
+            self.supply_status_bad = True
+        else:
+            # 不报「已打 X / Y 个字符」：数字符会把注意力从代码挪到计数器上。
+            # 只在他可能卡住的地方给一句提示 —— 多行题得告诉他换行按回车。
+            self.supply_status = '换行按回车' if '\n' in target else '打错不扣任何东西'
+            self.supply_status_bad = False
+
+    def _grant_supply(self) -> None:
+        """打对了：发奖，然后弹队列里的下一个。"""
+        if self.supply_kind == 'heal':
+            self.lives += LEAK_RESCUE_HEAL
+            self.leak_count = 0
+        else:
+            self.money += self.supply_gold
+            self.supply_taken += 1
+        self._close_supply()
+        self._pump_supply()
+
+    def _decline_supply(self) -> None:
+        """放弃：什么都不给。漏怪补救放弃了也把计数清零 ——
+        不清零的话下一波又弹同一个，孩子会觉得被纠缠。"""
+        if self.supply_kind == 'heal':
+            self.leak_count = 0
+        self._close_supply()
+        self._pump_supply()
+
+    def _close_supply(self) -> None:
+        self.supply_phase = ''
+        self.supply_kind = ''
+        self.supply_typed = ''
+        self.supply_challenge = {}
+        self.supply_done_t = -1.0
+        self._pending_char = ""
+        self._stop_text_input()
+        if self.state == 'supply':
+            self.state = 'playing'
 
     # ============================================================
     #  塔放置
@@ -305,6 +507,13 @@ class Game:
     # ============================================================
 
     def update(self, dt: float) -> None:
+        # KEYDOWN 兜底：这一帧没等到 TEXTINPUT，说明那条通道不通，手动补上字符
+        if self._pending_char:
+            ch, self._pending_char = self._pending_char, ""
+            if self.state == 'supply' and self.supply_phase == 'typing':
+                self.supply_typed += ch
+                self._refresh_code_status()
+
         if self.state == 'level_intro':
             self.intro_timer -= dt
             if self.intro_timer <= 0:
@@ -313,6 +522,12 @@ class Game:
             # 星级倒计时按真实时间累计：暂停时也继续计时，避免用暂停冻结星级时间
             self.level_elapsed += dt
             self._update_playing(dt * self.game_speed)
+        elif self.state == 'supply':
+            # 全打对之后停 0.45 秒再发奖：直接切走的话孩子看不清自己打完了
+            if self.supply_phase == 'typing' and self.supply_done_t >= 0:
+                self.supply_done_t += dt
+                if self.supply_done_t >= 0.45:
+                    self._grant_supply()
         elif self.state == 'level_complete':
             self.result_anim_timer += dt
         elif self.state == 'victory':
@@ -324,6 +539,16 @@ class Game:
     def _update_playing(self, dt: float) -> None:
         if self.paused:
             return
+
+        # 补给弹窗的缓冲：清场后先静一秒，让孩子看清场上还剩什么再弹窗
+        if self.supply_delay > 0:
+            self.supply_delay -= dt
+            if self.supply_delay <= 0:
+                self.supply_delay = 0.0
+                self._queue_supplies()
+                self._pump_supply()
+                if self.state != 'playing':
+                    return
 
         # 计时器递减
         if self.tip_timer > 0:
@@ -370,11 +595,14 @@ class Game:
             self.wave_active = False
             self.money += 50 + self.wave * 10
             if self.wave >= 10:
+                # 第 10 波清场：直接通关，不再弹补给（钱到手也花不掉）
                 self._finish_level()
             else:
                 # 当前波清场后，等 0.5 秒弹出下一波特殊兵种预告
                 # 预告期间点击任意位置立即关闭
                 self._queue_next_wave_preview()
+                # 补给不立刻弹：刚打完就糊一个对话框上来太突兀，等 SUPPLY_POPUP_DELAY
+                self.supply_delay = SUPPLY_POPUP_DELAY
 
         # 游戏结束检测
         if self.lives <= 0:
@@ -405,6 +633,7 @@ class Game:
             e.update(dt)
             if e.reached_end:
                 self.lives -= 1
+                self.leak_count += 1
                 e.alive = False
                 self.red_flash_timer = 0.3
                 audio.play('enemy_reach')
@@ -523,6 +752,10 @@ class Game:
             self._skip_intro_to_playing()
             return
 
+        if self.state == 'supply':
+            self._handle_supply_click(x, y)
+            return
+
         if self.state == 'menu':
             self._handle_menu_click(x, y)
         elif self.state == 'guide':
@@ -551,6 +784,72 @@ class Game:
                 self._handle_map_click(pos)
         elif self.state in ('game_over', 'level_complete'):
             self._handle_end_screen_click(x, y)
+
+    def _handle_supply_click(self, x: float, y: float) -> None:
+        """补给对话框点击。
+
+        ask 阶段：0 兑换补给 / 1 放弃补给
+        typing 阶段：0 清空重打 / 1 放弃补给
+        坐标与 renderer 同源，都取自 config.supply_button_rect。
+        """
+        for i in range(2):
+            bx, by, bw, bh = supply_button_rect(i)
+            if not (bx <= x <= bx + bw and by <= y <= by + bh):
+                continue
+            if self.supply_phase == 'ask':
+                if i == 0:
+                    self._start_typing()
+                else:
+                    self._decline_supply()
+            else:
+                if i == 0:
+                    self.supply_typed = ''
+                    self.supply_ime = ''
+                    self._pending_char = ''
+                    self._refresh_code_status()
+                else:
+                    self._decline_supply()
+            return
+
+    def _handle_supply_key(self, event) -> None:
+        """补给对话框的键盘输入。
+
+        字符走 TEXTINPUT（中文输入法也走这条路），这里只管功能键：
+        退格删一个；Tab 补四个空格；回车换行并自动补缩进（上一行以
+        { 结尾就多一层）；ESC 放弃。
+        """
+        key = event.key
+        if self.supply_phase == 'ask':
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._start_typing()
+            elif key == pygame.K_ESCAPE:
+                self._decline_supply()
+            return
+
+        if key == pygame.K_ESCAPE:
+            self._decline_supply()
+            return
+        if key == pygame.K_BACKSPACE:
+            self.supply_typed = self.supply_typed[:-1]
+            self._refresh_code_status()
+            return
+        if key == pygame.K_TAB:
+            self.supply_typed += "    "
+            self._refresh_code_status()
+            return
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.supply_typed += "\n" + cc.indent_after_newline(self.supply_typed + "\n")
+            self._refresh_code_status()
+            return
+        # 正常情况交给 TEXTINPUT 事件：这里再收一次 unicode 会重复上屏。
+        # 但 TEXTINPUT 万一在这台机器上不投递（老 SDL / 无头环境），
+        # 那就一个字都打不进去了 —— 所以先记下来，等这一帧结束还没等到
+        # TEXTINPUT 再手动补上，最多迟一帧，看不出来。
+        ch = getattr(event, "unicode", "") or ""
+        if ch and ch.isprintable():
+            if self._ime_ok:
+                return
+            self._pending_char = ch
 
     def _handle_menu_click(self, x: float, y: float) -> None:
         """主菜单点击。按钮坐标来自 config.menu_button_rect，与 renderer 同源。"""
@@ -659,7 +958,7 @@ class Game:
     def _submit_license(self) -> None:
         typed = lic.clean(self.license_input)
         if len(typed) != lic.CODE_CHARS:
-            self.license_msg = "激活码应该是 20 个字符，现在填了 %d 个" % len(typed)
+            self.license_msg = "激活码应该是 %d 个字符，现在填了 %d 个" % (lic.CODE_CHARS, len(typed))
             self.license_msg_color = (235, 120, 110)
             return
         res = lic.verify(self.license_input)
@@ -682,6 +981,9 @@ class Game:
         """键盘入口：激活页要吃字符，其余情况仍走原来的调试按键序列。"""
         if self.state == 'license':
             self._handle_license_key(event)
+            return
+        if self.state == 'supply':
+            self._handle_supply_key(event)
             return
         self.handle_debug_key(event.key)
 
@@ -930,34 +1232,24 @@ class Game:
             renderer.draw_level_intro(
                 self.intro_bg, self.current_level, level_name, self.intro_timer,
             )
-        elif self.state == 'playing':
-            renderer.draw_playing(
-                path=self.path,
-                towers=self.towers,
-                enemies=self.enemies,
-                bullets=self.bullets,
-                laser_manager=self.laser_manager,
-                particle_pool=self.particle_pool,
-                level_background=self.level_background,
-                selected_tower_type=self.selected_tower_type,
-                selected_tower=self.selected_tower,
-                mouse_pos=self.mouse_pos,
-                money=self.money,
-                tip_timer=self.tip_timer,
-                tip_text=self.tip_text,
-                boss_warning_timer=self.boss_warning_timer,
-                boss_warning_text=self.boss_warning_text,
-                red_flash_timer=self.red_flash_timer,
-                hovered_tower=self.hovered_tower,
-                current_level=self.current_level,
-                wave=self.wave,
-                lives=self.lives,
-                game_speed=self.game_speed,
-                paused=self.paused,
-                wave_preview_visible=self.preview_visible,
-                wave_preview_text=self.preview_text,
-                level_elapsed=self.level_elapsed,
+        elif self.state == 'supply':
+            # 底下照常画战场：对话框是压在上面的一层，关掉就得立刻接着看场面
+            self._draw_playing(renderer)
+            renderer.draw_supply(
+                kind=self.supply_kind,
+                phase=self.supply_phase,
+                gold=self.supply_gold,
+                level=self.supply_level,
+                challenge=self.supply_challenge,
+                typed=self.supply_typed,
+                status=self.supply_status,
+                status_bad=self.supply_status_bad,
+                match=self.supply_match,
+                heal=LEAK_RESCUE_HEAL,
+                ime=self.supply_ime,
             )
+        elif self.state == 'playing':
+            self._draw_playing(renderer)
         elif self.state == 'game_over':
             level_name = LEVEL_NAMES[self.current_level - 1] if self.current_level <= len(LEVEL_NAMES) else ""
             renderer.draw_game_over(
@@ -983,6 +1275,40 @@ class Game:
             )
         elif self.state == 'victory':
             renderer.draw_victory(self.difficulty)
+
+    def _draw_playing(self, renderer: Renderer) -> None:
+        """战场那一层。
+
+        单独抽出来是因为补给对话框要压在它上面重画一遍 —— 对话框是模态的，
+        但底下得看得见战场，孩子关掉之后要立刻接得上刚才的局面。
+        """
+        renderer.draw_playing(
+            path=self.path,
+            towers=self.towers,
+            enemies=self.enemies,
+            bullets=self.bullets,
+            laser_manager=self.laser_manager,
+            particle_pool=self.particle_pool,
+            level_background=self.level_background,
+            selected_tower_type=self.selected_tower_type,
+            selected_tower=self.selected_tower,
+            mouse_pos=self.mouse_pos,
+            money=self.money,
+            tip_timer=self.tip_timer,
+            tip_text=self.tip_text,
+            boss_warning_timer=self.boss_warning_timer,
+            boss_warning_text=self.boss_warning_text,
+            red_flash_timer=self.red_flash_timer,
+            hovered_tower=self.hovered_tower,
+            current_level=self.current_level,
+            wave=self.wave,
+            lives=self.lives,
+            game_speed=self.game_speed,
+            paused=self.paused,
+            wave_preview_visible=self.preview_visible,
+            wave_preview_text=self.preview_text,
+            level_elapsed=self.level_elapsed,
+        )
 
     def update_hover(self, mouse_pos: Tuple[float, float]) -> None:
         """更新鼠标悬浮状态（由主循环调用）。"""
